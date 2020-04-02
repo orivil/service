@@ -6,140 +6,87 @@
 package service
 
 import (
-	"errors"
 	"sync"
 )
 
-var ErrProviderNotExist = errors.New("provider not exist")
-
 // Provider 为服务提供者, 其功能相当于 new() 方法, 用于创建对象.
-type Provider func(c *Container) (value interface{}, err error)
+type Provider interface {
+	New(ctn *Container) (value interface{}, err error)
+}
+
+type ProviderFunc func(ctn *Container) (value interface{}, err error)
+
+func (pf ProviderFunc) New(ctn *Container) (value interface{}, err error) {
+	return pf(ctn)
+}
 
 func NewServiceProvider(provider Provider) *Provider {
 	return &provider
 }
 
-// ProviderContainer 主要用于给服务提供者命名
-type ProviderContainer struct {
-	providers map[string]*Provider
-	mu        sync.RWMutex
-}
-
-func NewProviderContainer() *ProviderContainer {
-	return &ProviderContainer{
-		providers: make(map[string]*Provider, 5),
-	}
-}
-
-func (pc *ProviderContainer) FlashCache(c *Container, providerName string) {
-	provider := pc.GetProvider(providerName)
-	if provider != nil {
-		c.FlashCache(provider)
-	}
-}
-
-func (pc *ProviderContainer) SetProvider(name string, provider *Provider) {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	pc.providers[name] = provider
-}
-
-func (pc *ProviderContainer) GetProvider(name string) (provider *Provider) {
-	pc.mu.RLock()
-	defer pc.mu.RUnlock()
-	return pc.providers[name]
-}
-
-func (pc *ProviderContainer) MustGet(c *Container, providerName string) (v interface{}) {
-	v, err := pc.Get(c, providerName)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-func (pc *ProviderContainer) Get(c *Container, providerName string) (v interface{}, err error) {
-	provider := pc.GetProvider(providerName)
-	if provider != nil {
-		return c.Get(provider)
-	} else {
-		return nil, ErrProviderNotExist
-	}
-}
-
-func (pc *ProviderContainer) MustGetNew(c *Container, providerName string) (v interface{}) {
-	v, err := pc.GetNew(c, providerName)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-func (pc *ProviderContainer) GetNew(c *Container, providerName string) (v interface{}, err error) {
-	provider := pc.GetProvider(providerName)
-	if provider != nil {
-		return c.GetNew(provider)
-	} else {
-		return nil, ErrProviderNotExist
-	}
-}
-
-func (pc *ProviderContainer) SetCache(c *Container, providerName string, new interface{}) (old interface{}) {
-	provider := pc.GetProvider(providerName)
-	if provider != nil {
-		return c.SetCache(provider, new)
-	} else {
-		return nil
-	}
-}
-
-func (pc *ProviderContainer) HasCache(c *Container, providerName string) bool {
-	provider := pc.GetProvider(providerName)
-	if provider != nil {
-		return c.HasCache(provider)
-	} else {
-		return false
-	}
-}
-
-// Container 作为对象容器(服务容器), 被所有服务所依赖. Container 分为单线程模式及多线程模式.
+// Container 是依赖容器, 用于管理服务的依赖
 type Container struct {
-	instances map[*Provider]interface{}
-	mu        *sync.RWMutex
+	instances   map[*Provider]interface{}
+	mus         map[*Provider]*sync.Mutex
+	beforeClose []func() error
+	mu          sync.Mutex
 }
 
-// safe 为 false 时为单线程模式(即只在单线程中运行), 不需要加锁, 因此不会发生阻塞, 单线程模式
-// 涵盖了大多数应用场景.
-// safe 为 true 时为多线程模式, 线程安全, 但有可能因为某一个服务阻塞而造成 Container 内所
-// 有服务都成为阻塞状态, 因此多线程模式下最好将不同功能的服务放在不同的容器中.
-func NewContainer(safe bool) *Container {
-	c := &Container{
+func NewContainer() *Container {
+	return &Container{
 		instances: make(map[*Provider]interface{}, 10),
+		mus:       make(map[*Provider]*sync.Mutex, 10),
 	}
-	if safe {
-		c.mu = &sync.RWMutex{}
+}
+
+func (c *Container) OnClose(callback func() error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.beforeClose = append(c.beforeClose, callback)
+}
+
+func (c *Container) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var errs Errors
+	for _, call := range c.beforeClose {
+		err := call()
+		if err != nil {
+			errs = append(errs)
+		}
 	}
-	return c
+	return errs
+}
+
+func (c *Container) getProviderLocker(p *Provider) *sync.Mutex {
+	c.mu.Lock()
+	locker := c.mus[p]
+	if locker == nil {
+		locker = &sync.Mutex{}
+		c.mus[p] = locker
+	}
+	c.mu.Unlock()
+	return locker
 }
 
 func (c *Container) MustGet(p *Provider) (value interface{}) {
-	value, err := c.Get(p)
+	var err error
+	value, err = c.Get(p)
 	if err != nil {
 		panic(err)
 	}
 	return value
 }
 
-// Get 用于获取服务的单例对象. 无论 Get 被调用多少次, p 只执行一次.
+// Get 用于获取服务的单例对象. p.New() 的返回结果将会被保存, 出现错误除外
 func (c *Container) Get(p *Provider) (value interface{}, err error) {
-	if c.mu != nil {
-		c.mu.RLock()
-		defer c.mu.RUnlock()
-	}
+	mu := c.getProviderLocker(p)
+	mu.Lock()
+	defer mu.Unlock()
 	if ins, ok := c.instances[p]; ok {
 		return ins, nil
 	} else {
-		ins, err = (*p)(c)
+		ins, err = (*p).New(c)
 		if err != nil {
 			return nil, err
 		} else {
@@ -150,7 +97,8 @@ func (c *Container) Get(p *Provider) (value interface{}, err error) {
 }
 
 func (c *Container) MustGetNew(p *Provider) (value interface{}) {
-	value, err := c.GetNew(p)
+	var err error
+	value, err = c.GetNew(p)
 	if err != nil {
 		panic(err)
 	} else {
@@ -158,36 +106,31 @@ func (c *Container) MustGetNew(p *Provider) (value interface{}) {
 	}
 }
 
-// GetNew 总是返回新的实例. 每次调用 GetNew 都会执行 p.
+// GetNew 总是返回新的实例. 每次调用 GetNew 都会执行 p.New()
 func (c *Container) GetNew(p *Provider) (value interface{}, err error) {
-	return (*p)(c)
+	return (*p).New(c)
 }
 
 // 设置新的缓存并返回旧的缓存.
-func (c *Container) SetCache(p *Provider, new interface{}) (old interface{}) {
-	if c.mu != nil {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-	}
+func (c *Container) SetGet(p *Provider, new interface{}) (old interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	old = c.instances[p]
 	c.instances[p] = new
 	return
 }
 
-func (c *Container) FlashCache(p *Provider) {
-	if c.mu != nil {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-	}
+// 删除缓存
+func (c *Container) Flash(p *Provider) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	delete(c.instances, p)
 }
 
-// 判断 p 是否有缓存实列
+// 判断 p 是否有缓存
 func (c *Container) HasCache(p *Provider) bool {
-	if c.mu != nil {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	_, ok := c.instances[p]
 	return ok
 }
