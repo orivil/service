@@ -69,9 +69,8 @@ func (c *Container) getProviderLocker(p *Provider) *sync.Mutex {
 	return locker
 }
 
-func (c *Container) MustGet(p *Provider) (value interface{}) {
-	var err error
-	value, err = c.Get(p)
+func (c *Container) MustGet(p *Provider) interface{} {
+	value, err := c.Get(p)
 	if err != nil {
 		panic(err)
 	}
@@ -79,13 +78,14 @@ func (c *Container) MustGet(p *Provider) (value interface{}) {
 }
 
 // Get 用于获取服务的单例对象. p.New() 的返回结果将会被保存, 出现错误除外
-func (c *Container) Get(p *Provider) (value interface{}, err error) {
+func (c *Container) Get(p *Provider) (interface{}, error) {
 	mu := c.getProviderLocker(p)
 	mu.Lock()
 	defer mu.Unlock()
 	if ins, ok := c.instances[p]; ok {
 		return ins, nil
 	} else {
+		var err error
 		ins, err = (*p).New(c)
 		if err != nil {
 			return nil, err
@@ -96,9 +96,8 @@ func (c *Container) Get(p *Provider) (value interface{}, err error) {
 	}
 }
 
-func (c *Container) MustGetNew(p *Provider) (value interface{}) {
-	var err error
-	value, err = c.GetNew(p)
+func (c *Container) MustGetNew(p *Provider) interface{} {
+	value, err := c.GetNew(p)
 	if err != nil {
 		panic(err)
 	} else {
@@ -107,7 +106,7 @@ func (c *Container) MustGetNew(p *Provider) (value interface{}) {
 }
 
 // GetNew 总是返回新的实例. 每次调用 GetNew 都会执行 p.New()
-func (c *Container) GetNew(p *Provider) (value interface{}, err error) {
+func (c *Container) GetNew(p *Provider) (interface{}, error) {
 	return (*p).New(c)
 }
 
