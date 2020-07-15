@@ -5,110 +5,100 @@
 package service_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/orivil/service"
-	"unsafe"
 )
 
-// 动物
-type Animal struct {
-	Type string
+type Client struct {
+	config *Config
 }
 
-// 狗
-type Dog struct {
-	Name   string
-	Animal *Animal
+type Config struct {
+	Addr     string `json:"addr"`
+	Password string `json:"password"`
 }
 
-// 猫
-type Cat struct {
-	Name   string
-	Animal *Animal
+type ConfigService struct {
+	provider service.Provider
 }
 
-// 动物对象提供器
-type AnimalProvider string
-
-// implement service.Provider
-func (p AnimalProvider) New(ctn *service.Container) (value interface{}, err error) {
-	return &Animal{Type: string(p)}, nil
-}
-
-// 狗对象提供器
-type DogProvider string
-
-// implement service.Provider
-func (p DogProvider) New(ctn *service.Container) (value interface{}, err error) {
-	// 获得依赖( Get 方法为单例模式, 如果需要工厂模式则使用 GetNew 方法)
-	value, err = ctn.Get(&mammalAnimal)
+// Get is a helper function for getting *Config object
+func (r *ConfigService) Get(ctn *service.Container) (*Config, error) {
+	c, err := ctn.Get(&r.provider)
 	if err != nil {
 		return nil, err
 	}
-	dog := &Dog{
-		Name:   string(p),
-		Animal: value.(*Animal),
-	}
-	return dog, nil
+	return c.(*Config), nil
 }
 
-// 猫对象提供器
-type CatProvider string
+func newConfigService(jsonData []byte) *ConfigService {
+	var provider service.ProviderFunc = func(ctn *service.Container) (value interface{}, err error) {
+		cfg := &Config{}
+		err = json.Unmarshal(jsonData, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return cfg, nil
+	}
+	return &ConfigService{provider: provider}
+}
 
-// implement service.Provider
-func (p CatProvider) New(ctn *service.Container) (value interface{}, err error) {
-	// 获得依赖(单例模式)
-	value, err = ctn.Get(&mammalAnimal)
+type ClientService struct {
+	provider service.Provider
+}
+
+// Get is a helper function for getting *Client object
+func (r *ClientService) Get(ctn *service.Container) (*Client, error) {
+	// Get function will return the singleton *Config object, the provider.New function only execute once.
+	// GetNew function will always execute provider.New function and return the result
+	c, err := ctn.Get(&r.provider)
 	if err != nil {
 		return nil, err
 	}
-	cat := &Cat{
-		Name:   string(p),
-		Animal: value.(*Animal),
-	}
-	return cat, nil
+	return c.(*Client), nil
 }
 
-// 提供哺乳动物
-var mammalAnimal = service.Provider(AnimalProvider("mammal"))
-
-// 提供 tony dog
-var dogTony = service.Provider(DogProvider("tony"))
-
-// 提供 kevin cat
-var catKevin = service.Provider(CatProvider("kevin"))
+// ClientService dependent on ConfigService
+func newClientService(cs *ConfigService) *ClientService {
+	var provider service.ProviderFunc = func(ctn *service.Container) (value interface{}, err error) {
+		var cfg *Config
+		// Get singleton cfg object
+		cfg, err = cs.Get(ctn)
+		if err != nil {
+			return nil, err
+		}
+		return &Client{config: cfg}, nil
+	}
+	return &ClientService{provider: provider}
+}
 
 func ExampleContainer() {
 
-	// 新建容器
+	var config = `{
+		"addr": "127.0.0.1:5432",
+		"password": "secret key"
+	}`
+
+	var configService = newConfigService([]byte(config))
+
+	var clientService = newClientService(configService)
+
+	// container contains the singleton objects
 	container := service.NewContainer()
 
-	// 获取 tony 对象(服务)
-	tony := container.MustGet(&dogTony).(*Dog)
+	// client will auto inject the config dependency
+	client, _ := clientService.Get(container)
 
-	// 已注入依赖
-	fmt.Printf("dog %s is a %s animal\n", tony.Name, tony.Animal.Type)
+	fmt.Println(client.config.Addr)
+	fmt.Println(client.config.Password)
 
-	// 获取 kevin 对象(服务)
-	kevin := container.MustGet(&catKevin).(*Cat)
-
-	fmt.Printf("cat %s is a %s animal\n", kevin.Name, kevin.Animal.Type)
-
-	// 他们的依赖是同一个 Animal 对象
-	fmt.Println(unsafe.Pointer(tony.Animal) == unsafe.Pointer(kevin.Animal)) // true
-
-	// GetNew() 为工厂模式, 每次都调用 New() 方法新建对象
-	newKevin := container.MustGetNew(&catKevin).(*Cat)
-
-	fmt.Println(unsafe.Pointer(kevin) == unsafe.Pointer(newKevin)) // false
-
-	// 工厂模式获得的依赖仍然可能是单例模式, 因为获取 Animal 对象的方法是 Get(), 而不是 GetNew()
-	fmt.Println(unsafe.Pointer(newKevin.Animal) == unsafe.Pointer(tony.Animal)) // true
+	cfg, _ := configService.Get(container)
+	cfg.Addr = "localhost:5432"
+	fmt.Println(client.config.Addr)
 
 	// Output:
-	// dog tony is a mammal animal
-	// cat kevin is a mammal animal
-	// true
-	// false
-	// true
+	// 127.0.0.1:5432
+	// secret key
+	// localhost:5432
 }
