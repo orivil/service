@@ -1,3 +1,3 @@
-module github.com/orivil/service
+module github.com/morgine/service
 
 go 1.14

@@ -1,30 +1,27 @@
-// Copyright 2018 orivil.com. All rights reserved.
-// Use of this source code is governed by a MIT-style
-// license that can be found at https://mit-license.org.
+// Copyright 2018 morgine.com. All rights reserved.
 
-// service 包是 golang 版的对象容器, 可实现对象依赖自动注入
+// Service package provided a dependency injection container
 package service
 
 import (
 	"sync"
 )
 
-// Provider 为服务提供者, 其功能相当于 new() 方法, 用于创建对象.
+// Provider interface provide service, it only execute once
+// if in singleton mode
 type Provider interface {
 	New(ctn *Container) (value interface{}, err error)
 }
 
+// ProviderFunc implemented the Provider interface
 type ProviderFunc func(ctn *Container) (value interface{}, err error)
 
 func (pf ProviderFunc) New(ctn *Container) (value interface{}, err error) {
 	return pf(ctn)
 }
 
-func NewServiceProvider(provider Provider) *Provider {
-	return &provider
-}
-
-// Container 是依赖容器, 用于管理服务的依赖
+// Container is a dependency injection container, it contains
+// singleton objects
 type Container struct {
 	instances   map[*Provider]interface{}
 	mus         map[*Provider]*sync.Mutex
@@ -39,12 +36,14 @@ func NewContainer() *Container {
 	}
 }
 
+// OnClose for registering callback functions execute at container Close
 func (c *Container) OnClose(callback func() error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.beforeClose = append(c.beforeClose, callback)
 }
 
+// Close for triggering the registered OnClose callbacks
 func (c *Container) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -69,15 +68,7 @@ func (c *Container) getProviderLocker(p *Provider) *sync.Mutex {
 	return locker
 }
 
-func (c *Container) MustGet(p *Provider) interface{} {
-	value, err := c.Get(p)
-	if err != nil {
-		panic(err)
-	}
-	return value
-}
-
-// Get 用于获取服务的单例对象. p.New() 的返回结果将会被保存, 出现错误除外
+// Get for getting singleton service, p.New function only execute once, and save the result
 func (c *Container) Get(p *Provider) (interface{}, error) {
 	mu := c.getProviderLocker(p)
 	mu.Lock()
@@ -96,21 +87,12 @@ func (c *Container) Get(p *Provider) (interface{}, error) {
 	}
 }
 
-func (c *Container) MustGetNew(p *Provider) interface{} {
-	value, err := c.GetNew(p)
-	if err != nil {
-		panic(err)
-	} else {
-		return value
-	}
-}
-
-// GetNew 总是返回新的实例. 每次调用 GetNew 都会执行 p.New()
+// GetNew always execute p.New function and return the results
 func (c *Container) GetNew(p *Provider) (interface{}, error) {
 	return (*p).New(c)
 }
 
-// 设置新的缓存并返回旧的缓存.
+// SetGet for setting new cache and return the old cache
 func (c *Container) SetGet(p *Provider, new interface{}) (old interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -119,14 +101,14 @@ func (c *Container) SetGet(p *Provider, new interface{}) (old interface{}) {
 	return
 }
 
-// 删除缓存
+// Flash for delete cache
 func (c *Container) Flash(p *Provider) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.instances, p)
 }
 
-// 判断 p 是否有缓存
+// HasCache returns whether contains p's cache(whether p.New function exectue)
 func (c *Container) HasCache(p *Provider) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
